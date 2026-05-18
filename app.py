@@ -25,11 +25,23 @@ def download_youtube_video(youtube_url, output_path, quality_choice):
     else:  
         format_str = 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]'
 
+    # 🔥 إعدادات خارقة ومطورة لمحاكاة متصفح حقيقي وتفادي حظر يوتيوب ف السيرفر السحابي 🛡️
     ydl_opts = {
         'format': format_str,
         'outtmpl': output_path,
         'quiet': True,
-        'no_warnings': True
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['dash', 'hls']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -51,12 +63,10 @@ def transcribe_audio_groq(audio_input):
         )
     return transcription.segments
 
-# [🛡️ دالة الترجمة المحمية بالتريث البشري المضمون 100%]
 def translate_segments_safe(segments):
     translated_segments = []
     translator = GoogleTranslator(source='en', target='ar')
     
-    # صنع بروجريس بار صغير ف الواجهة باش تشوفي تقدم الترجمة جملة بجملة
     progress_bar = st.progress(0)
     total_seg = len(segments)
     
@@ -70,10 +80,9 @@ def translate_segments_safe(segments):
             
         try:
             arabic_text = translator.translate(clean_text)
-            # تريث ذكي (نصف ثانية) لحماية الاتصال وضمان الترجمة للعربية
+            # تريث ذكي (نصف ثانية) لحماية الاتصال وضمان الترجمة للعربية الفصحى
             time.sleep(0.5)
         except Exception:
-            # محاولة أخيرة إذا وقع أي تشنج ف الإنترنت
             try:
                 time.sleep(1.0)
                 arabic_text = translator.translate(clean_text)
@@ -85,10 +94,9 @@ def translate_segments_safe(segments):
             "end": seg['end'],
             "text": arabic_text
         })
-        # تحديث شريط التقدم
         progress_bar.progress((i + 1) / total_seg)
         
-    progress_bar.empty() # حذف شريط التقدم بعد النهاية
+    progress_bar.empty() 
     return translated_segments
 
 async def save_edge_tts(text, output_path, voice):
@@ -109,7 +117,6 @@ async def generate_all_voices_async(segments, voice_id, batch_size=8):
         temp_path = f"audio_chunks/temp_{i}.mp3"
         tasks.append(save_edge_tts(seg['text'], temp_path, voice_id))
         
-        # تصغير حجم الدفعة لـ 8 لحماية السيرفر الصوتي وضمان جلب الأصوات كاملة
         if len(tasks) == batch_size or i == len(segments) - 1:
             await asyncio.gather(*tasks)
             tasks = [] 
@@ -243,7 +250,7 @@ if st.button("🚀 ابدأ الدبلجة الإمبراطورية الآن", t
                 extract_audio(input_video, output_audio)
                 
                 status_box.info("⏳ 2/5 جاري استخراج النص والتوقيت بدقة (Groq Whisper)...")
-                segments = transcribe_audio_groq(output_audio)
+                segments = transcribe_audio_groq(output_original_audio:=output_audio)
                 
                 status_box.info("⏳ 3/5 جاري الترجمة الاحترافية المضمونة (جوجل الآمن)...")
                 final_segments = translate_segments_safe(segments)
