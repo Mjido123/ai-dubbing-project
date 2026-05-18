@@ -4,10 +4,10 @@ import os
 import asyncio
 import shutil
 import time
+import requests
 from groq import Groq
 from deep_translator import GoogleTranslator
 import edge_tts
-import yt_dlp
 
 # إعداد مفتاح واجهة Groq API
 client = Groq(api_key="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")
@@ -15,29 +15,31 @@ client = Groq(api_key="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"
 # --- إعدادات واجهة الموقع (Streamlit UI) ---
 st.set_page_config(page_title="نظام الدبلجة الآلي الاحترافي", page_icon="🎬", layout="centered")
 
-def download_youtube_video(youtube_url, output_path):
-    # 🛡️ استخدام سرفرات الاندرويد الرسمية للهروب من حظر الـ 403 كليا ف السحاب
-    ydl_opts = {
-        'format': 'best[height<=480]/best',
-        'outtmpl': output_path,
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True,
-        'ignoreerrors': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-                'skip': ['dash', 'hls']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'com.google.android.youtube/19.15.35 (Linux; U; Android 11) Mozilla/5.0',
-        }
+def download_via_cobalt_api(youtube_url, output_path):
+    # 🔥 سحر الـ API الخارجي لتخطي حظر الـ 403 Forbidden بصفة نهائية ف السحاب
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": youtube_url,
+        "vQuality": "480", # جودة متوسطة وسريعة للتحميل ف السحاب
+        "isAudioOnly": False
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url])
-        return os.path.exists(output_path) and os.path.getsize(output_path) > 100000
+        response = requests.post(api_url, json=payload, headers=headers, timeout=20)
+        if response.status_code == 200:
+            video_download_url = response.json().get("url")
+            if video_download_url:
+                # تحميل ملف الفيديو من الرابط المباشر اللّي عطانا الـ API
+                video_data = requests.get(video_download_url, stream=True, timeout=60)
+                if video_data.status_code == 200:
+                    with open(output_path, 'wb') as f:
+                        for chunk in video_data.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                    return os.path.exists(output_path) and os.path.getsize(output_path) > 100000
+        return False
     except Exception:
         return False
 
@@ -156,9 +158,8 @@ def clear_temporary_files(audio_original_path, downloaded_video_path=None):
     if downloaded_video_path and os.path.exists(downloaded_video_path): os.remove(downloaded_video_path)
 
 # --- واجهة الموقع الاحترافية ---
-st.title("🎬 نظام الدبلجة الآلي الاحترافي (Anti-Block)")
+st.title("🎬 نظام الدبلجة الآلي الاحترافي (السحابي الخارق)")
 
-# ميزة مزدوجة: تحميل برابط أو رفع ملف مباشر 🛠️
 option = st.radio("اختر طريقة إدخال الفيديو:", ("عبر رابط يوتيوب 🔗", "رفع ملف فيديو من جهازك 📁"))
 
 youtube_url = ""
@@ -167,7 +168,7 @@ uploaded_file = None
 if option == "عبر رابط يوتيوب 🔗":
     youtube_url = st.text_input("دخل رابط فيديو يوتيوب هنا:")
 else:
-    uploaded_file = st.file_count = st.file_uploader("اختار ملف الفيديو (mp4):", type=["mp4"])
+    uploaded_file = st.file_uploader("اختار ملف الفيديو (mp4):", type=["mp4"])
 
 voice_option = st.selectbox("اختر خامة الصوت واللكنة:", ("صوت حامد (رجل - سعودي وقور)", "صوت شاكر (رجل - مصري إخباري)", "صوت سلمى (امرأة - مصري ناعم)", "صوت منى (امرأة - مغربي فصيح)"))
 
@@ -189,11 +190,11 @@ if st.button("🚀 ابدأ الدبلجة الإمبراطورية الآن", t
     ready = False
     
     if option == "عبر رابط يوتيوب 🔗" and youtube_url:
-        status_box.info("⏳ جاري سحب الفيديو عبر بروتوكول الأندرويد المحمي...")
-        if download_youtube_video(youtube_url, input_video):
+        status_box.info("⏳ جاري سحب وتخطي حماية الفيديو عبر الـ API الوسيط الخارق...")
+        if download_via_cobalt_api(youtube_url, input_video):
             ready = True
         else:
-            status_box.error("❌ يوتيوب فرضت حظراً كبيراً على هاد الفيديو ف السحاب، جرب ترفعه كملف مباشرة!")
+            status_box.error("❌ فشل سحب الفيديو من الـ API، جرب ترفع الفيديو كملف مباشرة لحسم الموقف!")
             
     elif option == "رفع ملف فيديو من جهازك 📁" and uploaded_file:
         with open(input_video, "wb") as f:
@@ -207,7 +208,7 @@ if st.button("🚀 ابدأ الدبلجة الإمبراطورية الآن", t
             status_box.info("⏳ 2/5 جاري استخراج النص التوقيتي بدقة (Groq Whisper)...")
             segments = transcribe_audio_groq(output_audio)
             status_box.info("⏳ 3/5 جاري الترجمة الاحترافية المضمونة...")
-            final_segments = translate_safe = translate_segments_safe(segments)
+            final_segments = translate_segments_safe(segments)
             status_box.info("⏳ 4/5 جاري توليد الأصوات العربية بالتوازي الموزون...")
             os.makedirs("audio_chunks", exist_ok=True)
             asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
@@ -215,7 +216,7 @@ if st.button("🚀 ابدأ الدبلجة الإمبراطورية الآن", t
             status_box.info("⏳ 5/5 جاري المونتاج النهائي للفيلم بـ FFmpeg...")
             merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path)
             
-            status_box.success("🎉 مبروك! انتهت الدبلجة بنجاح خارق!")
+            status_box.success("🎉 مبروك! انتهت الدبلجة بنجاح خارق وبأقوى واجهة سحابية!")
             with open(final_video_path, "rb") as video_file:
                 st.video(video_file.read())
             clear_temporary_files(output_audio, input_video)
