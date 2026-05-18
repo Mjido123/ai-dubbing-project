@@ -9,44 +9,35 @@ from deep_translator import GoogleTranslator
 import edge_tts
 import yt_dlp
 
-# إعداد مفتاح واجهة Groq API (فقط لاستخراج النص الأصلي)
+# إعداد مفتاح واجهة Groq API
 client = Groq(api_key="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")
 
 # --- إعدادات واجهة الموقع (Streamlit UI) ---
 st.set_page_config(page_title="نظام الدبلجة الآلي الاحترافي", page_icon="🎬", layout="centered")
 
-def download_youtube_video(youtube_url, output_path, quality_choice):
-    if "1080p" in quality_choice:
-        format_str = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]'
-    elif "720p" in quality_choice:
-        format_str = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]'
-    elif "480p" in quality_choice:
-        format_str = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]'
-    else:  
-        format_str = 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]'
-
-    # 🔥 إعدادات خارقة ومطورة لمحاكاة متصفح حقيقي وتفادي حظر يوتيوب ف السيرفر السحابي 🛡️
+def download_youtube_video(youtube_url, output_path):
+    # 🛡️ استخدام سرفرات الاندرويد الرسمية للهروب من حظر الـ 403 كليا ف السحاب
     ydl_opts = {
-        'format': format_str,
+        'format': 'best[height<=480]/best',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
+                'player_client': ['android', 'ios'],
                 'skip': ['dash', 'hls']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'User-Agent': 'com.google.android.youtube/19.15.35 (Linux; U; Android 11) Mozilla/5.0',
         }
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([youtube_url])
-        return True
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 100000
     except Exception:
         return False
 
@@ -71,43 +62,30 @@ def translate_segments_safe(segments):
     total_seg = len(segments)
     
     for i, seg in enumerate(segments):
-        english_text = seg['text'].strip()
-        clean_text = english_text.replace("-->", "").strip()
-        
-        if not clean_text:
+        english_text = seg['text'].strip().replace("-->", "")
+        if not english_text:
             translated_segments.append({"start": seg['start'], "end": seg['end'], "text": ""})
             continue
             
         try:
-            arabic_text = translator.translate(clean_text)
-            # تريث ذكي (نصف ثانية) لحماية الاتصال وضمان الترجمة للعربية الفصحى
-            time.sleep(0.5)
+            arabic_text = translator.translate(english_text)
+            time.sleep(0.4)
         except Exception:
-            try:
-                time.sleep(1.0)
-                arabic_text = translator.translate(clean_text)
-            except Exception:
-                arabic_text = clean_text 
+            arabic_text = english_text 
             
-        translated_segments.append({
-            "start": seg['start'],
-            "end": seg['end'],
-            "text": arabic_text
-        })
+        translated_segments.append({"start": seg['start'], "end": seg['end'], "text": arabic_text})
         progress_bar.progress((i + 1) / total_seg)
         
     progress_bar.empty() 
     return translated_segments
 
 async def save_edge_tts(text, output_path, voice):
-    if not text.strip():
-        return
+    if not text.strip(): return
     for attempt in range(3):
         try:
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(output_path)
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
-                break 
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100: break 
         except Exception:
             await asyncio.sleep(0.4)
 
@@ -116,7 +94,6 @@ async def generate_all_voices_async(segments, voice_id, batch_size=8):
     for i, seg in enumerate(segments):
         temp_path = f"audio_chunks/temp_{i}.mp3"
         tasks.append(save_edge_tts(seg['text'], temp_path, voice_id))
-        
         if len(tasks) == batch_size or i == len(segments) - 1:
             await asyncio.gather(*tasks)
             tasks = [] 
@@ -127,13 +104,10 @@ def match_speed_and_render(segments):
         target_duration = seg['end'] - seg['start']
         temp_path = f"audio_chunks/temp_{i}.mp3"
         chunk_path = f"audio_chunks/chunk_{i}.wav"
-        
-        if not os.path.exists(temp_path) or os.path.getsize(temp_path) < 100:
-            continue
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) < 100: continue
             
-        duration_cmd = f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_path}"'
         try:
-            actual_duration = float(subprocess.check_output(duration_cmd, shell=True).strip())
+            actual_duration = float(subprocess.check_output(f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_path}"', shell=True).strip())
         except Exception:
             actual_duration = target_duration
             
@@ -145,24 +119,17 @@ def match_speed_and_render(segments):
                 speed_command = f'ffmpeg -i "{temp_path}" -filter:a "atempo={speed_factor}" "{chunk_path}" -y'
             subprocess.run(speed_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            convert_command = f'ffmpeg -i "{temp_path}" "{chunk_path}" -y'
-            subprocess.run(convert_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-        if os.path.exists(temp_path): 
-            os.remove(temp_path)
+            subprocess.run(f'ffmpeg -i "{temp_path}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(temp_path): os.remove(temp_path)
 
 def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
-    duration_cmd = f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"'
     try:
-        video_duration = float(subprocess.check_output(duration_cmd, shell=True).strip())
-    except Exception:
-        video_duration = 0
+        video_duration = float(subprocess.check_output(f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"', shell=True).strip())
+    except Exception: video_duration = 0
     
     filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={video_duration}[a_silent];"
     amix_inputs = "[a_silent]"
     inputs_args = f'-i "{video_input}"'
-    
-    volume_booster = "2.5"
     
     valid_chunks_count = 0
     for i, seg in enumerate(segments):
@@ -170,55 +137,39 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
         if os.path.exists(chunk_path):
             inputs_args += f' -i "{chunk_path}"'
             delay_ms = int(seg['start'] * 1000)
-            filter_complex += f"[{valid_chunks_count+1}:a]adelay={delay_ms}|{delay_ms},volume={volume_booster}[delayed_{i}];"
+            filter_complex += f"[{valid_chunks_count+1}:a]adelay={delay_ms}|{delay_ms},volume=2.5[delayed_{i}];"
             amix_inputs += f"[delayed_{i}]"
             valid_chunks_count += 1
             
     if valid_chunks_count == 0:
-        final_command = f'ffmpeg -i "{video_input}" -c copy -y "{output_video_path}"'
-        subprocess.run(final_command, shell=True)
+        subprocess.run(f'ffmpeg -i "{video_input}" -c copy -y "{output_video_path}"', shell=True)
         return
 
     filter_complex += f"{amix_inputs}amix=inputs={valid_chunks_count+1}:duration=first[out_audio]"
-    
-    filter_script_path = "filter_complex.txt"
-    with open(filter_script_path, "w", encoding="utf-8") as f:
-        f.write(filter_complex)
-        
-    final_command = f'ffmpeg {inputs_args} -filter_complex_script "{filter_script_path}" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"'
-    subprocess.run(final_command, shell=True)
-    
-    if os.path.exists(filter_script_path):
-        os.remove(filter_script_path)
+    with open("filter_complex.txt", "w", encoding="utf-8") as f: f.write(filter_complex)
+    subprocess.run(f'ffmpeg {inputs_args} -filter_complex_script "filter_complex.txt" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"', shell=True)
+    if os.path.exists("filter_complex.txt"): os.remove("filter_complex.txt")
 
 def clear_temporary_files(audio_original_path, downloaded_video_path=None):
-    if os.path.exists("audio_chunks"):
-        shutil.rmtree("audio_chunks")
-    if os.path.exists(audio_original_path):
-        os.remove(audio_original_path)
-    if downloaded_video_path and os.path.exists(downloaded_video_path):
-        os.remove(downloaded_video_path)
+    if os.path.exists("audio_chunks"): shutil.rmtree("audio_chunks")
+    if os.path.exists(audio_original_path): os.remove(audio_original_path)
+    if downloaded_video_path and os.path.exists(downloaded_video_path): os.remove(downloaded_video_path)
 
-# --- تصميم واجهة موقع الويب ---
-st.title("🎬 نظام الدبلجة الآلي الاحترافي")
-st.markdown("حول أي فيديو يوتيوب إنجليزي طويل إلى فيديو مدبلج بالعربية أوتوماتيكياً بـ كليك وحدة!")
+# --- واجهة الموقع الاحترافية ---
+st.title("🎬 نظام الدبلجة الآلي الاحترافي (Anti-Block)")
 
-youtube_url = st.text_input("🔗 أدخل رابط فيديو يوتيوب هنا:", placeholder="https://www.youtube.com/watch?v=...")
+# ميزة مزدوجة: تحميل برابط أو رفع ملف مباشر 🛠️
+option = st.radio("اختر طريقة إدخال الفيديو:", ("عبر رابط يوتيوب 🔗", "رفع ملف فيديو من جهازك 📁"))
 
-quality_choice = st.selectbox(
-    "🎞️ اختر جودة تحميل الفيديو اللّي بغيتي:",
-    ("480p (جودة متوسطة وسريعة)", "720p (جودة عالية HD)", "1080p (جودة عالية جداً)", "360p (اقتصادية)")
-)
+youtube_url = ""
+uploaded_file = None
 
-voice_option = st.selectbox(
-    "🎙️ اختر خامة الصوت واللّكنة المفضلين لديك:",
-    (
-        "صوت حامد (رجل - سعودي وقور)", 
-        "صوت شاكر (رجل - مصري إخباري)", 
-        "صوت سلمى (امرأة - مصري ناعم)", 
-        "صوت منى (امرأة - مغربي فصيح)"
-    )
-)
+if option == "عبر رابط يوتيوب 🔗":
+    youtube_url = st.text_input("دخل رابط فيديو يوتيوب هنا:")
+else:
+    uploaded_file = st.file_count = st.file_uploader("اختار ملف الفيديو (mp4):", type=["mp4"])
+
+voice_option = st.selectbox("اختر خامة الصوت واللكنة:", ("صوت حامد (رجل - سعودي وقور)", "صوت شاكر (رجل - مصري إخباري)", "صوت سلمى (امرأة - مصري ناعم)", "صوت منى (امرأة - مغربي فصيح)"))
 
 voice_mapping = {
     "صوت حامد (رجل - سعودي وقور)": "Microsoft Server Speech Text to Speech Voice (ar-SA, HamedNeural)",
@@ -227,53 +178,47 @@ voice_mapping = {
     "صوت منى (امرأة - مغربي فصيح)": "Microsoft Server Speech Text to Speech Voice (ar-MA, MounaNeural)"
 }
 
-selected_voice_id = voice_mapping[voice_option]
-
 if st.button("🚀 ابدأ الدبلجة الإمبراطورية الآن", type="primary"):
-    if not youtube_url:
-        st.warning("عافاك دخل رابط فيديو يوتيوب أولاً!")
-    else:
-        output_folder = "web_outputs"
-        os.makedirs(output_folder, exist_ok=True)
-        
-        input_video = "web_temp_video.mp4"
-        output_audio = "web_temp_audio.mp3"
-        final_video_path = os.path.join(output_folder, "final_dubbed_video.mp4")
-        
-        status_box = st.empty()
-        
+    output_folder = "web_outputs"
+    os.makedirs(output_folder, exist_ok=True)
+    input_video = "web_temp_video.mp4"
+    output_audio = "web_temp_audio.mp3"
+    final_video_path = os.path.join(output_folder, "final_dubbed_video.mp4")
+    
+    status_box = st.empty()
+    ready = False
+    
+    if option == "عبر رابط يوتيوب 🔗" and youtube_url:
+        status_box.info("⏳ جاري سحب الفيديو عبر بروتوكول الأندرويد المحمي...")
+        if download_youtube_video(youtube_url, input_video):
+            ready = True
+        else:
+            status_box.error("❌ يوتيوب فرضت حظراً كبيراً على هاد الفيديو ف السحاب، جرب ترفعه كملف مباشرة!")
+            
+    elif option == "رفع ملف فيديو من جهازك 📁" and uploaded_file:
+        with open(input_video, "wb") as f:
+            f.write(uploaded_file.read())
+        ready = True
+
+    if ready:
         try:
-            status_box.info(f"⏳ جاري تحميل الفيديو من يوتيوب بجودة {quality_choice}... (قد يستغرق لحظات)")
-            if download_youtube_video(youtube_url, input_video, quality_choice):
-                
-                status_box.info("⏳ 1/5 جاري عزل وصيانة الصوت الأصلي...")
-                extract_audio(input_video, output_audio)
-                
-                status_box.info("⏳ 2/5 جاري استخراج النص والتوقيت بدقة (Groq Whisper)...")
-                segments = transcribe_audio_groq(output_original_audio:=output_audio)
-                
-                status_box.info("⏳ 3/5 جاري الترجمة الاحترافية المضمونة (جوجل الآمن)...")
-                final_segments = translate_segments_safe(segments)
-                
-                status_box.info("⏳ 4/5 جاري توليد خام الأصوات بنظام المجموعات المحمي (Turbo Batches)...")
-                os.makedirs("audio_chunks", exist_ok=True)
-                asyncio.run(generate_all_voices_async(final_segments, selected_voice_id))
-                
-                status_box.info("⏳ جاري وزن سرعات المقاطع الصوتية وهندسة الفريكونسي...")
-                match_speed_and_render(final_segments)
-                
-                status_box.info("⏳ 5/5 جاري رندرة ومونتاج الفيديو النهائي بـ FFmpeg...")
-                merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path)
-                
-                status_box.success("🎉 مبروك! انتهت دبلجة الفيديو بنجاح خارق وبصوت عربي كامل!")
-                
-                st.markdown("### 🍿 شاهد وحمل الفيديو المدبلج:")
-                with open(final_video_path, "rb") as video_file:
-                    st.video(video_file.read())
-                    
-                clear_temporary_files(output_audio, input_video)
-            else:
-                status_box.error("❌ فشل تحميل الفيديو، يرجى التحقق من الرابط وإعادة المحاولة.")
+            status_box.info("⏳ 1/5 جاري عزل وصيانة الصوت...")
+            extract_audio(input_video, output_audio)
+            status_box.info("⏳ 2/5 جاري استخراج النص التوقيتي بدقة (Groq Whisper)...")
+            segments = transcribe_audio_groq(output_audio)
+            status_box.info("⏳ 3/5 جاري الترجمة الاحترافية المضمونة...")
+            final_segments = translate_safe = translate_segments_safe(segments)
+            status_box.info("⏳ 4/5 جاري توليد الأصوات العربية بالتوازي الموزون...")
+            os.makedirs("audio_chunks", exist_ok=True)
+            asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
+            match_speed_and_render(final_segments)
+            status_box.info("⏳ 5/5 جاري المونتاج النهائي للفيلم بـ FFmpeg...")
+            merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path)
+            
+            status_box.success("🎉 مبروك! انتهت الدبلجة بنجاح خارق!")
+            with open(final_video_path, "rb") as video_file:
+                st.video(video_file.read())
+            clear_temporary_files(output_audio, input_video)
         except Exception as e:
-            status_box.error(f"❌ حدث خطأ غير متوقع: {str(e)}")
+            status_box.error(f"❌ حدث خطأ: {str(e)}")
             clear_temporary_files(output_audio, input_video)
