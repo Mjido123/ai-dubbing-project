@@ -162,7 +162,7 @@ async def generate_all_voices_async(segments, voice_id, batch_size=12):
             await asyncio.sleep(0.2) 
 
 def match_speed_and_render(segments):
-    # ⚙️ دالة ذكية كتحسب شحال تسرع كاع الـ Audios وكتخرج لينا الـ Average Speed
+    # 🧼 السكربت كيرجع للحالة المستقرة ديالو: كيزير الصوت فقط باش يقد الـ Timeline د المونتاج الأصلي وبلا مشاكل
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
     ffprobe_cmd = get_ffmpeg_path("ffprobe")
     speeds_list = []
@@ -178,7 +178,6 @@ def match_speed_and_render(segments):
         
         if actual_duration > target_duration and target_duration > 0:
             speed_factor = actual_duration / target_duration
-            # نسجلوا نسبة تسريع هاد المقطع ف اللستة
             speeds_list.append(speed_factor)
             
             if speed_factor > 2.0:
@@ -186,25 +185,21 @@ def match_speed_and_render(segments):
             else:
                 subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" -filter:a "atempo={speed_factor}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            speeds_list.append(1.0) # ما تسرعش
+            speeds_list.append(1.0)
             subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(temp_path): os.remove(temp_path)
         
-    # حساب الـ Average د كاع السرعات
     avg_speed = sum(speeds_list) / len(speeds_list) if speeds_list else 1.0
     return avg_speed
 
-def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path, avg_speed):
+def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
     ffprobe_cmd = get_ffmpeg_path("ffprobe")
     try:
         video_duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"', shell=True).strip())
     except: video_duration = 0
     
-    # 🚨 تسريع وقت الـ Timeline د الفيديو بناء على الـ Average اللّي حسبناه باش يجي كولشي متناسق
-    adjusted_duration = video_duration * avg_speed
-    
-    filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={adjusted_duration}[a_silent];"
+    filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={video_duration}[a_silent];"
     amix_inputs = "[a_silent]"
     inputs_args = f'-i "{video_input}"'
     valid_chunks_count = 0
@@ -213,8 +208,7 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path, avg_
         chunk_path = f"audio_chunks/chunk_{i}.wav"
         if os.path.exists(chunk_path):
             inputs_args += f' -i "{chunk_path}"'
-            # ضبط الـ delays د الصوت باش يتبع السرعة الجديدة د الفيديو 🕰️
-            delay_ms = int((seg['start'] * avg_speed) * 1000)
+            delay_ms = int(seg['start'] * 1000)
             filter_complex += f"[{valid_chunks_count+1}:a]adelay={delay_ms}|{delay_ms},volume=2.5[delayed_{i}];"
             amix_inputs += f"[delayed_{i}]"
             valid_chunks_count += 1
@@ -223,20 +217,35 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path, avg_
         subprocess.run(f'"{ffmpeg_cmd}" -i "{video_input}" -c copy -y "{output_video_path}"', shell=True)
         return
 
-    # إضافة فلتر تسريع الصورة د الفيديو [0:v] بالـ setpts بناء على الـ avg_speed 🎞️
-    pts_factor = 1.0 / avg_speed
-    filter_complex += f"[0:v]setpts={pts_factor}*PTS[v_fast];"
-    
     filter_complex += f"{amix_inputs}amix=inputs={valid_chunks_count+1}:duration=first[out_audio]"
     
     with open("filter_complex.txt", "w", encoding="utf-8") as f: 
         f.write(filter_complex)
         
-    # دمج الصورة المسرعة مع تراك الصوت المتناسق
-    cmd = f'"{ffmpeg_cmd}" {inputs_args} -filter_complex_script "filter_complex.txt" -map "[v_fast]" -map "[out_audio]" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest -y "{output_video_path}"'
+    cmd = f'"{ffmpeg_cmd}" {inputs_args} -filter_complex_script "filter_complex.txt" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"'
     subprocess.run(cmd, shell=True)
     
     if os.path.exists("filter_complex.txt"): os.remove("filter_complex.txt")
+
+def apply_final_stretch_to_bloc(input_video_path, output_video_path, avg_speed):
+    # 🚀 الدالة السحرية اللّي كتنفذ الفكرة ديالك: كتشد الفيديو والمسار د الصوت مدموجين ناضيين ف كتلة واحدة، وكتجبدهم بـ FFmpeg ف لقطة وحدة!
+    ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
+    
+    # بما أننا باغيين نطولوا (نبطأوا) الكتلة الكاملة، غانضربو الـ PTS ف نفس الـ avg_speed
+    video_pts_factor = avg_speed
+    
+    # والـ Audio حتى هو خاصو يتباطأ بنفس النسبة المقلوبة (1 / avg_speed) باش يمشي متناسق 100% مع الصورة الممددة
+    audio_tempo_factor = 1.0 / avg_speed
+    
+    # بناء الفلتر د التبطيء الموحد للكتلة
+    if audio_tempo_factor < 0.5:
+        # حماية للـ FFmpeg إلى كانت نسبة التمدد كبيرة بزاف
+        audio_filter = f"atempo=0.5,atempo={audio_tempo_factor/0.5}"
+    else:
+        audio_filter = f"atempo={audio_tempo_factor}"
+        
+    cmd = f'"{ffmpeg_cmd}" -i "{input_video_path}" -filter_complex "[0:v]setpts={video_pts_factor}*PTS[v];[0:a]{audio_filter}[a]" -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac -y "{output_video_path}"'
+    subprocess.run(cmd, shell=True)
 
 st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل")
 st.markdown("اختر طريقة إدخال الفيديو اللّي بغيتي، والسيستم غايتولى كاع مراحل الدبلجة والتلخيص أونلاين!")
@@ -267,10 +276,12 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
     else:
         input_video = "local_temp_video.mp4"
         output_audio = "local_temp_audio.mp3"
+        temp_merged_video = "temp_merged_video.mp4"
         final_video_path = "final_dubbed_video.mp4"
         
         if os.path.exists(input_video): os.remove(input_video)
         if os.path.exists(output_audio): os.remove(output_audio)
+        if os.path.exists(temp_merged_video): os.remove(temp_merged_video)
         if os.path.exists(final_video_path): os.remove(final_video_path)
         if os.path.exists("audio_chunks"): shutil.rmtree("audio_chunks")
         
@@ -290,13 +301,13 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
             status.info("⏳ 1/5 جاري فصل وصيانة صوت الفيديو الأصلي...")
             extract_audio(input_video, output_audio)
             
-            status.info("⏳ 2/5 جاري قراءة كلمات الفيديو بذكاء (معالجة الساعات الطويلة)...")
+            status.info("⏳ 2/5 جاري قراءة كلمات الفيديو بذكاء...")
             segments = transcribe_audio_groq(output_audio)
             
             status.info("⏳ 3/5 جاري استخراج زبدة الفيديو والنقاط الأساسية...")
             summary_text = generate_video_summary(segments)
             
-            status.info("⏳ 4/5 جاري توليد صياغة الأصوات العربية وحساب معدل السرعة الواقعي...")
+            status.info("⏳ 4/5 جاري توليد صياغة الأصوات العربية هندسياً...")
             trans_progress = st.progress(0)
             final_segments = translate_segments_safe(segments, trans_progress)
             trans_progress.empty()
@@ -304,15 +315,23 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
             os.makedirs("audio_chunks", exist_ok=True)
             asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
             
-            # 🔥 جلب الـ average speed ديريكت من هندسة الصوت
+            # جلب معدل سرعة الأجزاء د الصوت
             avg_speed = match_speed_and_render(final_segments)
-            st.sidebar.metric(label="📈 نسبة متزامنة لتعديل سرعة الفيديو تلقائياً:", value=f"{avg_speed:.2f}x")
+            st.sidebar.metric(label="📈 معدل تمديد الكتلة النهائية الموحدة تلقائياً:", value=f"{avg_speed:.2f}x")
             
-            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم النهائي ليتناسب مع سرعة الصوت الواقعية...")
-            merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path, avg_speed)
+            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم الأولي المدموج...")
+            merge_audio_with_video_ffmpeg(input_video, final_segments, temp_merged_video)
+            
+            # 🔥 اللقطة الكبيرة اللّي قلتي عليها: تطبيق التعديل الإجمالي على الكتلة اللّي خرجات واجدة!
+            if os.path.exists(temp_merged_video) and os.path.getsize(temp_merged_video) > 1000:
+                status.info("⏳ جاري تمديد وإصلاح موجة الصوت والصورة للكتلة النهائية لتصبح واقعية...")
+                apply_final_stretch_to_bloc(temp_merged_video, final_video_path, avg_speed)
+                
+                # مسح الملف المؤقت المدموج
+                if os.path.exists(temp_merged_video): os.remove(temp_merged_video)
             
             if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1000:
-                status.success("🎉 مبروك! انتهت العملية بنجاح وبأعلى درجات الواقعية الصوتية!")
+                status.success("🎉 مبروك! انتهى المونتاج النهائي للفيلم والكتلة الصوتية مطابقة ومفهومة 100%!")
                 st.markdown("### 💡 زبدة الفيديو وأهم النقاط:")
                 st.info(summary_text)
                 st.markdown("### 🎞️ الفيديو المدبلج بالكامل:")
