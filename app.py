@@ -15,11 +15,10 @@ client = Groq(api_key="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"
 
 st.set_page_config(page_title="نظام الدبلجة والتلخيص المتكامل", page_icon="🎬", layout="centered")
 
-# دالة ذكية لمعرفة مسار FFmpeg على حسب السيرفر (ويندوز أو لينوكس أونلاين)
 def get_ffmpeg_path(command_name="ffmpeg"):
     if os.path.exists(f"C:\\ffmpeg\\bin\\{command_name}.exe"):
         return f"C:\\ffmpeg\\bin\\{command_name}.exe"
-    return command_name # ف السيرفر أونلاين غايشتغل ديريكت باسم البرنامج
+    return command_name 
 
 def download_youtube_video(youtube_url, output_path):
     ydl_opts = {
@@ -28,7 +27,6 @@ def download_youtube_video(youtube_url, output_path):
         'quiet': True,
         'no_warnings': True,
     }
-    # إذا كنا ف اللوكال نربطو المسار، ف الأونلاين لينوكس كيتعرف عليه بوحدو
     if os.path.exists("C:\\ffmpeg\\bin"):
         ydl_opts['ffmpeg_location'] = 'C:\\ffmpeg\\bin'
         
@@ -164,8 +162,11 @@ async def generate_all_voices_async(segments, voice_id, batch_size=12):
             await asyncio.sleep(0.2) 
 
 def match_speed_and_render(segments):
+    # ⚙️ دالة ذكية كتحسب شحال تسرع كاع الـ Audios وكتخرج لينا الـ Average Speed
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
     ffprobe_cmd = get_ffmpeg_path("ffprobe")
+    speeds_list = []
+
     for i, seg in enumerate(segments):
         target_duration = seg['end'] - seg['start']
         temp_path = f"audio_chunks/temp_{i}.mp3"
@@ -174,24 +175,36 @@ def match_speed_and_render(segments):
         try:
             actual_duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_path}"', shell=True).strip())
         except: actual_duration = target_duration
+        
         if actual_duration > target_duration and target_duration > 0:
             speed_factor = actual_duration / target_duration
+            # نسجلوا نسبة تسريع هاد المقطع ف اللستة
+            speeds_list.append(speed_factor)
+            
             if speed_factor > 2.0:
                 subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" -filter:a "atempo=2.0,atempo={speed_factor/2.0}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" -filter:a "atempo={speed_factor}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
+            speeds_list.append(1.0) # ما تسرعش
             subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(temp_path): os.remove(temp_path)
+        
+    # حساب الـ Average د كاع السرعات
+    avg_speed = sum(speeds_list) / len(speeds_list) if speeds_list else 1.0
+    return avg_speed
 
-def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
+def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path, avg_speed):
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
     ffprobe_cmd = get_ffmpeg_path("ffprobe")
     try:
         video_duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"', shell=True).strip())
     except: video_duration = 0
     
-    filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={video_duration}[a_silent];"
+    # 🚨 تسريع وقت الـ Timeline د الفيديو بناء على الـ Average اللّي حسبناه باش يجي كولشي متناسق
+    adjusted_duration = video_duration * avg_speed
+    
+    filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={adjusted_duration}[a_silent];"
     amix_inputs = "[a_silent]"
     inputs_args = f'-i "{video_input}"'
     valid_chunks_count = 0
@@ -200,7 +213,8 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
         chunk_path = f"audio_chunks/chunk_{i}.wav"
         if os.path.exists(chunk_path):
             inputs_args += f' -i "{chunk_path}"'
-            delay_ms = int(seg['start'] * 1000)
+            # ضبط الـ delays د الصوت باش يتبع السرعة الجديدة د الفيديو 🕰️
+            delay_ms = int((seg['start'] * avg_speed) * 1000)
             filter_complex += f"[{valid_chunks_count+1}:a]adelay={delay_ms}|{delay_ms},volume=2.5[delayed_{i}];"
             amix_inputs += f"[delayed_{i}]"
             valid_chunks_count += 1
@@ -209,17 +223,22 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
         subprocess.run(f'"{ffmpeg_cmd}" -i "{video_input}" -c copy -y "{output_video_path}"', shell=True)
         return
 
+    # إضافة فلتر تسريع الصورة د الفيديو [0:v] بالـ setpts بناء على الـ avg_speed 🎞️
+    pts_factor = 1.0 / avg_speed
+    filter_complex += f"[0:v]setpts={pts_factor}*PTS[v_fast];"
+    
     filter_complex += f"{amix_inputs}amix=inputs={valid_chunks_count+1}:duration=first[out_audio]"
     
     with open("filter_complex.txt", "w", encoding="utf-8") as f: 
         f.write(filter_complex)
         
-    cmd = f'"{ffmpeg_cmd}" {inputs_args} -filter_complex_script "filter_complex.txt" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"'
+    # دمج الصورة المسرعة مع تراك الصوت المتناسق
+    cmd = f'"{ffmpeg_cmd}" {inputs_args} -filter_complex_script "filter_complex.txt" -map "[v_fast]" -map "[out_audio]" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest -y "{output_video_path}"'
     subprocess.run(cmd, shell=True)
     
     if os.path.exists("filter_complex.txt"): os.remove("filter_complex.txt")
 
-st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل (Online Cloud)")
+st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل")
 st.markdown("اختر طريقة إدخال الفيديو اللّي بغيتي، والسيستم غايتولى كاع مراحل الدبلجة والتلخيص أونلاين!")
 
 input_source = st.radio("👇 اختر مصدر الفيديو:", ("🔗 رابط من يوتيوب", "💻 تحميل ملف فيديو من جهازك (MP4)"))
@@ -277,20 +296,23 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
             status.info("⏳ 3/5 جاري استخراج زبدة الفيديو والنقاط الأساسية...")
             summary_text = generate_video_summary(segments)
             
-            status.info("⏳ 4/5 جاري توليد صياغة الأصوات العربية بالتوازي...")
+            status.info("⏳ 4/5 جاري توليد صياغة الأصوات العربية وحساب معدل السرعة الواقعي...")
             trans_progress = st.progress(0)
             final_segments = translate_segments_safe(segments, trans_progress)
             trans_progress.empty()
             
             os.makedirs("audio_chunks", exist_ok=True)
             asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
-            match_speed_and_render(final_segments)
             
-            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم النهائي...")
-            merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path)
+            # 🔥 جلب الـ average speed ديريكت من هندسة الصوت
+            avg_speed = match_speed_and_render(final_segments)
+            st.sidebar.metric(label="📈 نسبة متزامنة لتعديل سرعة الفيديو تلقائياً:", value=f"{avg_speed:.2f}x")
+            
+            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم النهائي ليتناسب مع سرعة الصوت الواقعية...")
+            merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path, avg_speed)
             
             if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1000:
-                status.success("🎉 مبروك! انتهت العملية بنجاح باهر أونلاين!")
+                status.success("🎉 مبروك! انتهت العملية بنجاح وبأعلى درجات الواقعية الصوتية!")
                 st.markdown("### 💡 زبدة الفيديو وأهم النقاط:")
                 st.info(summary_text)
                 st.markdown("### 🎞️ الفيديو المدبلج بالكامل:")
