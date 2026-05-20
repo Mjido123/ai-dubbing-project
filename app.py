@@ -162,7 +162,6 @@ async def generate_all_voices_async(segments, voice_id, batch_size=12):
             await asyncio.sleep(0.2) 
 
 def match_speed_and_render(segments):
-    # 🧼 السكربت كيرجع للحالة المستقرة ديالو: كيزير الصوت فقط باش يقد الـ Timeline د المونتاج الأصلي وبلا مشاكل
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
     ffprobe_cmd = get_ffmpeg_path("ffprobe")
     speeds_list = []
@@ -228,23 +227,20 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
     if os.path.exists("filter_complex.txt"): os.remove("filter_complex.txt")
 
 def apply_final_stretch_to_bloc(input_video_path, output_video_path, avg_speed):
-    # 🚀 الدالة السحرية اللّي كتنفذ الفكرة ديالك: كتشد الفيديو والمسار د الصوت مدموجين ناضيين ف كتلة واحدة، وكتجبدهم بـ FFmpeg ف لقطة وحدة!
+    # 🎛️ إضافة هندسة صوتية وفلاتر (Highpass + Treble) لتصفية الصوت "المبهمح" وإظهار الكلمات نقية
     ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
-    
-    # بما أننا باغيين نطولوا (نبطأوا) الكتلة الكاملة، غانضربو الـ PTS ف نفس الـ avg_speed
     video_pts_factor = avg_speed
-    
-    # والـ Audio حتى هو خاصو يتباطأ بنفس النسبة المقلوبة (1 / avg_speed) باش يمشي متناسق 100% مع الصورة الممددة
     audio_tempo_factor = 1.0 / avg_speed
     
-    # بناء الفلتر د التبطيء الموحد للكتلة
     if audio_tempo_factor < 0.5:
-        # حماية للـ FFmpeg إلى كانت نسبة التمدد كبيرة بزاف
-        audio_filter = f"atempo=0.5,atempo={audio_tempo_factor/0.5}"
+        audio_base_filter = f"atempo=0.5,atempo={audio_tempo_factor/0.5}"
     else:
-        audio_filter = f"atempo={audio_tempo_factor}"
+        audio_base_filter = f"atempo={audio_tempo_factor}"
         
-    cmd = f'"{ffmpeg_cmd}" -i "{input_video_path}" -filter_complex "[0:v]setpts={video_pts_factor}*PTS[v];[0:a]{audio_filter}[a]" -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac -y "{output_video_path}"'
+    # 🔥 هنا زدنا الفلتر د التصفية: highpass=f=90 كيحيد خنوقية الـ Bass، و treble=g=4 كيزيد وضوح الحروف بلا ما يخربق الصوت د حامد
+    audio_final_filter = f"{audio_base_filter},highpass=f=90,treble=g=4"
+        
+    cmd = f'"{ffmpeg_cmd}" -i "{input_video_path}" -filter_complex "[0:v]setpts={video_pts_factor}*PTS[v];[0:a]{audio_final_filter}[a]" -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac -y "{output_video_path}"'
     subprocess.run(cmd, shell=True)
 
 st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل")
@@ -315,23 +311,20 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
             os.makedirs("audio_chunks", exist_ok=True)
             asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
             
-            # جلب معدل سرعة الأجزاء د الصوت
             avg_speed = match_speed_and_render(final_segments)
             st.sidebar.metric(label="📈 معدل تمديد الكتلة النهائية الموحدة تلقائياً:", value=f"{avg_speed:.2f}x")
             
             status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم الأولي المدموج...")
             merge_audio_with_video_ffmpeg(input_video, final_segments, temp_merged_video)
             
-            # 🔥 اللقطة الكبيرة اللّي قلتي عليها: تطبيق التعديل الإجمالي على الكتلة اللّي خرجات واجدة!
             if os.path.exists(temp_merged_video) and os.path.getsize(temp_merged_video) > 1000:
-                status.info("⏳ جاري تمديد وإصلاح موجة الصوت والصورة للكتلة النهائية لتصبح واقعية...")
+                status.info("⏳ جاري تمديد الكتلة وتصفية وهندسة الصوت لإزالة أي كتمان أو بهمجية...")
                 apply_final_stretch_to_bloc(temp_merged_video, final_video_path, avg_speed)
                 
-                # مسح الملف المؤقت المدموج
                 if os.path.exists(temp_merged_video): os.remove(temp_merged_video)
             
             if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1000:
-                status.success("🎉 مبروك! انتهى المونتاج النهائي للفيلم والكتلة الصوتية مطابقة ومفهومة 100%!")
+                status.success("🎉 مبروك! انتهى المونتاج النهائي والكتلة الصوتية مصفاة ونقية جداً!")
                 st.markdown("### 💡 زبدة الفيديو وأهم النقاط:")
                 st.info(summary_text)
                 st.markdown("### 🎞️ الفيديو المدبلج بالكامل:")
