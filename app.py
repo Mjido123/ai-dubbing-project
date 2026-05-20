@@ -15,14 +15,23 @@ client = Groq(api_key="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"
 
 st.set_page_config(page_title="نظام الدبلجة والتلخيص المتكامل", page_icon="🎬", layout="centered")
 
+# دالة ذكية لمعرفة مسار FFmpeg على حسب السيرفر (ويندوز أو لينوكس أونلاين)
+def get_ffmpeg_path(command_name="ffmpeg"):
+    if os.path.exists(f"C:\\ffmpeg\\bin\\{command_name}.exe"):
+        return f"C:\\ffmpeg\\bin\\{command_name}.exe"
+    return command_name # ف السيرفر أونلاين غايشتغل ديريكت باسم البرنامج
+
 def download_youtube_video(youtube_url, output_path):
     ydl_opts = {
         'format': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'ffmpeg_location': 'C:\\ffmpeg\\bin'
     }
+    # إذا كنا ف اللوكال نربطو المسار، ف الأونلاين لينوكس كيتعرف عليه بوحدو
+    if os.path.exists("C:\\ffmpeg\\bin"):
+        ydl_opts['ffmpeg_location'] = 'C:\\ffmpeg\\bin'
+        
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([youtube_url])
@@ -31,12 +40,14 @@ def download_youtube_video(youtube_url, output_path):
         return False
 
 def extract_audio(video_input, audio_output):
-    command = f'C:\\ffmpeg\\bin\\ffmpeg.exe -i "{video_input}" -q:a 0 -map a "{audio_output}" -y'
+    ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
+    command = f'"{ffmpeg_cmd}" -i "{video_input}" -q:a 0 -map a "{audio_output}" -y'
     subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def get_audio_duration(audio_path):
+    ffprobe_cmd = get_ffmpeg_path("ffprobe")
     try:
-        duration = float(subprocess.check_output(f'C:\\ffmpeg\\bin\\ffprobe.exe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{audio_path}"', shell=True).strip())
+        duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{audio_path}"', shell=True).strip())
         return duration
     except:
         return 0
@@ -59,11 +70,12 @@ def transcribe_audio_groq(audio_input):
         
         all_segments = []
         os.makedirs("audio_chunks_trans", exist_ok=True)
+        ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
         
         for i in range(total_chunks):
             start_time = i * chunk_length
             chunk_path = f"audio_chunks_trans/chunk_{i}.mp3"
-            cmd = f'C:\\ffmpeg\\bin\\ffmpeg.exe -ss {start_time} -i "{audio_input}" -t {chunk_length} -acodec copy "{chunk_path}" -y'
+            cmd = f'"{ffmpeg_cmd}" -ss {start_time} -i "{audio_input}" -t {chunk_length} -acodec copy "{chunk_path}" -y'
             subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 1000:
@@ -89,7 +101,7 @@ def transcribe_audio_groq(audio_input):
         return all_segments
 
 def generate_video_summary(segments):
-    full_text = " ".join([seg['text'] for seg in segments[:300]]) # حصرنا النصوص د الفيديوهات الطويلة بزاف
+    full_text = " ".join([seg['text'] for seg in segments[:300]])
     try:
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -99,7 +111,7 @@ def generate_video_summary(segments):
                     "content": (
                         "أنت خبير محترف في تلخيص محتوى الفيديوهات باللغة العربية الفصحى. "
                         "قم بقراءة النص التالي المأخوذ من فيديو بالإنجليزية، وصغ الملخص هكذا بالضبط:\n\n"
-                        "1️⃣ في البداية، اكتب سطرين مركزين جداً تجيب فيهما على: ما هي أهم حاجة وأكبر فائدة سيستفيدها المشاهد من هذا الفيديو؟\n"
+                        "1️⃣ في البداية, اكتب سطرين مركزين جداً تجيب فيهما على: ما هي أهم حاجة وأكبر فائدة سيستفيدها المشاهد من هذا الفيديو؟\n"
                         "2️⃣ تحتها مباشرة، اكتب سطر فرعي باسم '📍 أهم النقاط التي تم مناقشتها:' ثم اذكر أهم 3 إلى 5 نقاط أساسية تحدث عنها الفيديو على شكل عوارض واضحة ومختصرة.\n\n"
                         "تجنب المقدمات الطويلة والتزم بالاختصار والمفيد ديريكت."
                     )
@@ -127,7 +139,7 @@ def translate_segments_safe(segments, progress_bar):
             continue
         try:
             arabic_text = translator.translate(english_text)
-            time.sleep(0.2) # تسريع الترجمة للفيديوهات الطويلة
+            time.sleep(0.2)
         except Exception: arabic_text = english_text 
         translated_segments.append({"start": seg['start'], "end": seg['end'], "text": arabic_text})
         progress_bar.progress((i + 1) / total_seg)
@@ -142,7 +154,7 @@ async def save_edge_tts(text, output_path, voice):
             if os.path.exists(output_path) and os.path.getsize(output_path) > 100: break 
         except: await asyncio.sleep(0.2)
 
-async def generate_all_voices_async(segments, voice_id, batch_size=12): # تسريع توليد الصوت عبر زيادة الـ batch
+async def generate_all_voices_async(segments, voice_id, batch_size=12):
     tasks = []
     for i, seg in enumerate(segments):
         tasks.append(save_edge_tts(seg['text'], f"audio_chunks/temp_{i}.mp3", voice_id))
@@ -152,28 +164,31 @@ async def generate_all_voices_async(segments, voice_id, batch_size=12): # تسر
             await asyncio.sleep(0.2) 
 
 def match_speed_and_render(segments):
+    ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
+    ffprobe_cmd = get_ffmpeg_path("ffprobe")
     for i, seg in enumerate(segments):
         target_duration = seg['end'] - seg['start']
         temp_path = f"audio_chunks/temp_{i}.mp3"
         chunk_path = f"audio_chunks/chunk_{i}.wav"
         if not os.path.exists(temp_path) or os.path.getsize(temp_path) < 100: continue
         try:
-            actual_duration = float(subprocess.check_output(f'C:\\ffmpeg\\bin\\ffprobe.exe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_path}"', shell=True).strip())
+            actual_duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{temp_path}"', shell=True).strip())
         except: actual_duration = target_duration
         if actual_duration > target_duration and target_duration > 0:
             speed_factor = actual_duration / target_duration
             if speed_factor > 2.0:
-                subprocess.run(f'C:\\ffmpeg\\bin\\ffmpeg.exe -i "{temp_path}" -filter:a "atempo=2.0,atempo={speed_factor/2.0}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" -filter:a "atempo=2.0,atempo={speed_factor/2.0}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                subprocess.run(f'C:\\ffmpeg\\bin\\ffmpeg.exe -i "{temp_path}" -filter:a "atempo={speed_factor}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" -filter:a "atempo={speed_factor}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            subprocess.run(f'C:\\ffmpeg\\bin\\ffmpeg.exe -i "{temp_path}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f'"{ffmpeg_cmd}" -i "{temp_path}" "{chunk_path}" -y', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(temp_path): os.remove(temp_path)
 
 def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
-    # 🔥 دالة معالجة المونتاج مصلحة ومؤمنة 100% للفيديوهات الطويلة والكبيرة
+    ffmpeg_cmd = get_ffmpeg_path("ffmpeg")
+    ffprobe_cmd = get_ffmpeg_path("ffprobe")
     try:
-        video_duration = float(subprocess.check_output(f'C:\\ffmpeg\\bin\\ffprobe.exe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"', shell=True).strip())
+        video_duration = float(subprocess.check_output(f'"{ffprobe_cmd}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_input}"', shell=True).strip())
     except: video_duration = 0
     
     filter_complex = f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={video_duration}[a_silent];"
@@ -191,8 +206,7 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
             valid_chunks_count += 1
             
     if valid_chunks_count == 0:
-        # حماية ف حالة ما تلقى حتى مقطع صوتي واجد
-        subprocess.run(f'C:\\ffmpeg\\bin\\ffmpeg.exe -i "{video_input}" -c copy -y "{output_video_path}"', shell=True)
+        subprocess.run(f'"{ffmpeg_cmd}" -i "{video_input}" -c copy -y "{output_video_path}"', shell=True)
         return
 
     filter_complex += f"{amix_inputs}amix=inputs={valid_chunks_count+1}:duration=first[out_audio]"
@@ -200,14 +214,13 @@ def merge_audio_with_video_ffmpeg(video_input, segments, output_video_path):
     with open("filter_complex.txt", "w", encoding="utf-8") as f: 
         f.write(filter_complex)
         
-    # رندرة احترافية تضمن إنتاج الفيديو النهائي بدون تشنج
-    cmd = f'C:\\ffmpeg\\bin\\ffmpeg.exe {inputs_args} -filter_complex_script "filter_complex.txt" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"'
+    cmd = f'"{ffmpeg_cmd}" {inputs_args} -filter_complex_script "filter_complex.txt" -map 0:v -map "[out_audio]" -c:v copy -c:a aac -shortest -y "{output_video_path}"'
     subprocess.run(cmd, shell=True)
     
     if os.path.exists("filter_complex.txt"): os.remove("filter_complex.txt")
 
-st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل")
-st.markdown("اختر طريقة إدخال الفيديو اللّي بغيتي، والسيستم غايتولى كاع مراحل الدبلجة والتلخيص!")
+st.title("🎬 مصنع الدبلجة والتلخيص الآلي المتكامل (Online Cloud)")
+st.markdown("اختر طريقة إدخال الفيديو اللّي بغيتي، والسيستم غايتولى كاع مراحل الدبلجة والتلخيص أونلاين!")
 
 input_source = st.radio("👇 اختر مصدر الفيديو:", ("🔗 رابط من يوتيوب", "💻 تحميل ملف فيديو من جهازك (MP4)"))
 
@@ -273,18 +286,17 @@ if st.button("🚀 ابدأ الدبلجة والتلخيص الآن", type="pri
             asyncio.run(generate_all_voices_async(final_segments, voice_mapping[voice_option]))
             match_speed_and_render(final_segments)
             
-            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم النهائي (قد يستغرق بضع دقائق للفيديوهات الطويلة)...")
+            status.info("⏳ 5/5 جاري رندرة ومونتاج الفيلم النهائي...")
             merge_audio_with_video_ffmpeg(input_video, final_segments, final_video_path)
             
-            # 🔥 حماية أمنية للتأكد من وجود الملف النهائي قبل عرضه لتفادي الـ FileNotFoundError
             if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1000:
-                status.success("🎉 مبروك! انتهت العملية بنجاح باهر!")
+                status.success("🎉 مبروك! انتهت العملية بنجاح باهر أونلاين!")
                 st.markdown("### 💡 زبدة الفيديو وأهم النقاط:")
                 st.info(summary_text)
                 st.markdown("### 🎞️ الفيديو المدبلج بالكامل:")
                 with open(final_video_path, "rb") as video_file:
                     st.video(video_file.read())
             else:
-                status.error("❌ فشل الـ FFmpeg في إنتاج الفيديو النهائي. يرجى مراجعة حجم الملف أو تجربة مقطع أقصر.")
+                status.error("❌ فشل الـ FFmpeg في إنتاج الفيديو النهائي.")
         else:
             status.error("❌ فشل معالجة الفيديو، يرجى التأكد من الملف أو الرابط المحطوط.")
